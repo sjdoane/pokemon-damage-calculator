@@ -20,7 +20,7 @@ It is designed for desktop browsers on Windows and macOS, with a responsive layo
 - A live scouting panel for common moves, held items, abilities, natures, Stat Point spreads, and teammates
 - A one-click direction switch for calculating your move into the opponent or an opponent's likely move into your exact set
 
-Use **My teams** to save multiple named teams to the private cloud library. Every saved team receives a Champion Lens Team ID that can be entered on another computer to restore the exact six Pokémon and their sets. The importer also checks supported public Pokémon Champions team directories for publicly shared Replica IDs. When a source exposes only the roster, Champion Lens fills in current common builds and identifies that result for review.
+Use **My teams** to save multiple named teams to the private cloud library. Every saved team receives a Champion Lens Team ID that can be entered on another computer to restore the exact six Pokémon and their sets. The importer also checks supported public Pokémon Champions team directories for publicly shared Replica IDs. Published full sets include their Stat Point spreads. When a source exposes only the roster, Champion Lens applies each Pokémon's current most-common Stat Point spread instead of leaving the spread at zero, and identifies that result for review.
 
 ## Run it on Windows or macOS
 

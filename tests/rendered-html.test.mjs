@@ -55,6 +55,8 @@ test("ships the current Champions data, team library, and calculator engine", as
   assert.match(source, /16 EXACT DAMAGE ROLLS/);
   assert.match(source, /TEAM_STORAGE_KEY/);
   assert.match(source, /Your team library/);
+  assert.match(source, /importedSpreadIsValid/);
+  assert.match(source, /current most-common Stat Point spread/);
   assert.match(source, /Bashful/);
   assert.match(source, /Docile/);
   assert.match(source, /Hardy/);

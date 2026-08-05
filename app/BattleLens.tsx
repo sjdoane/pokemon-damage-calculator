@@ -328,9 +328,13 @@ function importedBuild(member: ImportedMember, format: Format): Build | null {
   if (!matchedPokemon || !matchedForm) return null;
   const base = commonBuild(matchedPokemon.showdownId, format);
   const formAbilities = matchedForm.abilities.split("|").filter(Boolean);
-  const importedAbility = member.ability && formAbilities.includes(member.ability)
-    ? member.ability
-    : formAbilities[0] || member.ability || base.ability;
+  const importedAbility = member.ability
+    ? formAbilities.includes(member.ability)
+      ? member.ability
+      : matchedForm.form_kind === "Mega"
+        ? formAbilities[0] || base.ability
+        : member.ability
+    : base.ability;
   const sp: Stats = {
     hp: Math.min(32, Math.max(0, Number(member.sp?.hp) || 0)),
     atk: Math.min(32, Math.max(0, Number(member.sp?.atk) || 0)),
@@ -340,6 +344,7 @@ function importedBuild(member: ImportedMember, format: Format): Build | null {
     spe: Math.min(32, Math.max(0, Number(member.sp?.spe) || 0)),
   };
   const total = Object.values(sp).reduce((sum, value) => sum + value, 0);
+  const importedSpreadIsValid = Boolean(member.sp) && total <= 66;
 
   return {
     ...base,
@@ -349,7 +354,7 @@ function importedBuild(member: ImportedMember, format: Format): Build | null {
     ability: importedAbility,
     item: member.item ?? base.item,
     moves: member.moves?.length ? [...member.moves, "", "", "", ""].slice(0, 4) : base.moves,
-    sp: total <= 66 ? sp : base.sp,
+    sp: importedSpreadIsValid ? sp : base.sp,
   };
 }
 
@@ -1329,8 +1334,8 @@ function TeamLibraryModal({
       setTeamName(payload.name || `Replica ${normalized}`);
       setPendingReplicaCode(payload.replicaCode || normalized);
       setMessage(payload.detailLevel === "roster"
-        ? `Imported the ${imported.length}-Pokémon roster from ${payload.source}. That source does not publish every set detail on the web, so common current builds were filled in for review.`
-        : `Imported ${imported.length} Pokémon with their published sets from ${payload.source}. Review them, then save the team to get a permanent Champion Lens ID.`);
+        ? `Imported the ${imported.length}-Pokémon roster from ${payload.source}. That source does not publish the exact spreads on the web, so each Pokémon now receives its current most-common Stat Point spread instead of a zero spread.`
+        : `Imported ${imported.length} Pokémon with their published moves, items, natures, abilities, and Stat Point spreads from ${payload.source}. Review them, then save the team to get a permanent Champion Lens ID.`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "That Team ID could not be imported.");
     } finally {
