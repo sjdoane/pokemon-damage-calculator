@@ -50,6 +50,7 @@ import {
   type Result,
 } from "@smogon/calc";
 import rawData from "./data/champions-data.json";
+import { effectiveMoveDetails, scaleDamage } from "./champions-mechanics";
 
 type StatKey = "hp" | "atk" | "def" | "spa" | "spd" | "spe";
 type Status = "" | "brn" | "par" | "psn" | "tox" | "slp" | "frz";
@@ -138,6 +139,15 @@ type BattleState = {
   defenderSpeedStage: number;
   attackerTailwind: boolean;
   defenderTailwind: boolean;
+  attackerAbilityActive: boolean;
+  defenderAbilityActive: boolean;
+  attackerHP: number;
+  attackerCharged: boolean;
+  attackerHelpingHand: boolean;
+  defenderFriendGuard: boolean;
+  defenderProtected: boolean;
+  alliesFainted: number;
+  moveHits: number;
   screen: boolean;
   crit: boolean;
   spread: boolean;
@@ -280,6 +290,15 @@ const DEFAULT_BATTLE: BattleState = {
   defenderSpeedStage: 0,
   attackerTailwind: false,
   defenderTailwind: false,
+  attackerAbilityActive: false,
+  defenderAbilityActive: false,
+  attackerHP: 100,
+  attackerCharged: false,
+  attackerHelpingHand: false,
+  defenderFriendGuard: false,
+  defenderProtected: false,
+  alliesFainted: 0,
+  moveHits: 0,
   screen: false,
   crit: false,
   spread: true,
@@ -300,11 +319,11 @@ function normalizedTokens(value: string) {
 
 function importedBuild(member: ImportedMember, format: Format): Build | null {
   const wanted = normalizedName(member.formName);
-  let matchedPokemon: PokemonData | undefined;
-  let matchedForm: FormData | undefined;
+  const wantedTokens = normalizedTokens(member.formName);
+  const matches: Array<{ pokemon: PokemonData; form: FormData; score: number }> = [];
 
   for (const pokemon of POKEMON) {
-    const form = pokemon.forms.find((candidate) => {
+    for (const candidate of pokemon.forms) {
       const aliases = [
         candidate.form_name,
         candidate.saved_name,
@@ -315,15 +334,24 @@ function importedBuild(member: ImportedMember, format: Format): Build | null {
         pokemon.showdownName,
         `${pokemon.name}-${candidate.form_kind}`,
       ];
-      const wantedTokens = normalizedTokens(member.formName);
-      return aliases.some((alias) => normalizedName(alias) === wanted || normalizedTokens(alias) === wantedTokens);
-    });
-    if (form) {
-      matchedPokemon = pokemon;
-      matchedForm = form;
-      break;
+      const exactAliases = aliases.filter((alias) => normalizedName(alias) === wanted);
+      const tokenAliases = aliases.filter((alias) => normalizedTokens(alias) === wantedTokens);
+      if (!exactAliases.length && !tokenAliases.length) continue;
+      const pokemonName = normalizedName(pokemon.name);
+      const formName = normalizedName(candidate.form_name);
+      const score =
+        exactAliases.length * 100 +
+        tokenAliases.length * 20 +
+        (formName === wanted ? 80 : 0) +
+        (pokemonName === wanted ? 60 : 0) +
+        (pokemonName && wanted.includes(pokemonName) ? pokemonName.length : 0);
+      matches.push({ pokemon, form: candidate, score });
     }
   }
+
+  matches.sort((left, right) => right.score - left.score);
+  const matchedPokemon = matches[0]?.pokemon;
+  const matchedForm = matches[0]?.form;
 
   if (!matchedPokemon || !matchedForm) return null;
   const base = commonBuild(matchedPokemon.showdownId, format);
@@ -509,15 +537,26 @@ function stageMultiplier(stage: number) {
   return stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
 }
 
+function highestNonHPStat(stats: Stats): Exclude<StatKey, "hp"> {
+  return (["def", "spa", "spd", "spe"] as const).reduce<Exclude<StatKey, "hp">>(
+    (best, stat) => stats[stat] > stats[best] ? stat : best,
+    "atk",
+  );
+}
+
 function speedValue(
   build: Build,
   stage: number,
   weather: BattleState["weather"],
+  terrain: BattleState["terrain"],
   tailwind: boolean,
+  abilityActive: boolean,
 ) {
-  let speed = visibleStats(build).spe;
+  const stats = visibleStats(build);
+  let speed = stats.spe;
   speed = Math.floor(speed * stageMultiplier(stage));
-  if (build.status === "par") speed = Math.floor(speed / 2);
+  const quickFeet = build.ability === "Quick Feet" && Boolean(build.status);
+  if (build.status === "par" && !quickFeet) speed = Math.floor(speed / 2);
   if (build.item === "Choice Scarf") speed = Math.floor(speed * 1.5);
   if (build.item === "Iron Ball" || build.item === "Macho Brace") speed = Math.floor(speed / 2);
   if (
@@ -527,6 +566,22 @@ function speedValue(
     (build.ability === "Slush Rush" && weather === "Snow")
   ) {
     speed *= 2;
+  }
+  if (build.ability === "Surge Surfer" && terrain === "Electric") speed *= 2;
+  if (quickFeet) speed = Math.floor(speed * 1.5);
+  if (build.ability === "Unburden" && abilityActive) speed *= 2;
+  if (build.ability === "Slow Start" && abilityActive) speed = Math.floor(speed / 2);
+  const paradoxActive =
+    abilityActive ||
+    build.item === "Booster Energy" ||
+    (build.ability === "Protosynthesis" && weather === "Sun") ||
+    (build.ability === "Quark Drive" && terrain === "Electric");
+  if (
+    paradoxActive &&
+    ["Protosynthesis", "Quark Drive"].includes(build.ability) &&
+    highestNonHPStat(stats) === "spe"
+  ) {
+    speed = Math.floor(speed * 1.5);
   }
   if (tailwind) speed *= 2;
   return Math.floor(speed);
@@ -550,6 +605,41 @@ function calcNameFor(pokemon: PokemonData, form: FormData) {
   return `${base.replace(/\s+/g, "-")}-Mega${suffix ? `-${suffix}` : ""}`;
 }
 
+function isGrounded(build: Build) {
+  const form = getForm(build);
+  if (!form) return true;
+  if (build.item === "Iron Ball") return true;
+  return !form.types.includes("Flying") && !["Levitate", "Eelevate"].includes(build.ability);
+}
+
+function effectiveMoveFor(name: string, build: Build, state: BattleState) {
+  const initial = new Move(GEN, name);
+  const champions = MOVE_OVERRIDES[name];
+  const form = getForm(build);
+  const effective = effectiveMoveDetails({
+    name,
+    type: champions?.type ?? initial.type,
+    basePower: champions?.basePower ?? initial.bp,
+    category: champions?.category ?? initial.category,
+    isSound: Boolean(initial.flags.sound),
+  }, {
+    ability: build.ability,
+    item: build.item,
+    weather: state.weather,
+    terrain: state.terrain,
+    primaryType: form?.types[0],
+    grounded: isGrounded(build),
+  });
+  if (state.attackerCharged && effective.type === "Electric" && effective.basePower > 0) {
+    return {
+      ...effective,
+      basePower: effective.basePower * 2,
+      note: `${effective.note ? `${effective.note} · ` : ""}Charged: 2× power`,
+    };
+  }
+  return effective;
+}
+
 function findBaseForTarget(
   stat: Exclude<StatKey, "hp">,
   target: number,
@@ -563,7 +653,7 @@ function findBaseForTarget(
   return Math.max(1, target - sp - 20);
 }
 
-function makeMove(name: string, build: Build, crit: boolean, spread: boolean) {
+function makeMove(name: string, build: Build, crit: boolean, spread: boolean, state?: BattleState) {
   const initial = new Move(GEN, name);
   const champions = MOVE_OVERRIDES[name];
   const overrides: Record<string, unknown> = champions
@@ -575,15 +665,33 @@ function makeMove(name: string, build: Build, crit: boolean, spread: boolean) {
     : {};
   const type = champions?.type ?? initial.type;
   const basePower = champions?.basePower ?? initial.bp;
+  const effective = state ? effectiveMoveFor(name, build, state) : null;
 
   if (build.ability === "Dragonize" && type === "Normal" && basePower > 0) {
     overrides.type = "Dragon";
     overrides.basePower = Math.floor(basePower * 1.2);
   }
+  if (state?.attackerCharged && effective?.type === "Electric" && basePower > 0) {
+    if (type === "Electric" || name === "Terrain Pulse") {
+      overrides.basePower = basePower * 2;
+    } else if (build.ability === "Galvanize" && type === "Normal") {
+      overrides.type = "Electric";
+      overrides.basePower = effective.basePower;
+    }
+  }
+  const piercesProtection =
+    state?.defenderProtected &&
+    ["Piercing Drill", "Unseen Fist"].includes(build.ability) &&
+    Boolean(initial.flags.contact) &&
+    !initial.breaksProtect;
+  if (piercesProtection) overrides.breaksProtect = true;
   if (!spread) overrides.target = "any";
 
   return new Move(GEN, name, {
+    ability: build.ability as never,
+    item: build.item as never,
     isCrit: crit,
+    hits: state?.moveHits || undefined,
     overrides: overrides as never,
   });
 }
@@ -593,6 +701,8 @@ function makeCalcPokemon(
   boosts: Partial<Stats>,
   currentHPPercent = 100,
   fireManeStat?: "atk" | "spa",
+  abilityActive = false,
+  alliesFainted = 0,
 ) {
   const pokemon = getPokemon(build);
   const form = getForm(build);
@@ -612,10 +722,17 @@ function makeCalcPokemon(
   const displayStats = visibleStats(build);
   const currentHP = Math.max(1, Math.floor((displayStats.hp * currentHPPercent) / 100));
   const ability = build.ability === "Eelevate" ? "Levitate" : build.ability;
+  const boostedStat =
+    abilityActive && ["Protosynthesis", "Quark Drive"].includes(build.ability)
+      ? highestNonHPStat(displayStats)
+      : "auto";
   const options = {
     level: 50,
     nature: build.nature,
     ability,
+    abilityOn: abilityActive,
+    alliesFainted,
+    boostedStat,
     item: build.item || undefined,
     status: build.status,
     evs: Object.fromEntries(
@@ -647,23 +764,28 @@ function runDamage(
   state: BattleState,
   crit = state.crit,
 ) {
-  const movePreview = makeMove(moveName, attacker, crit, state.spread);
+  const movePreview = makeMove(moveName, attacker, crit, state.spread, state);
+  const effective = effectiveMoveFor(moveName, attacker, state);
   const attackingStat = movePreview.category === "Physical" ? "atk" : "spa";
   const defensiveStat = movePreview.category === "Physical" ? "def" : "spd";
   const fireManeStat =
-    attacker.ability === "Fire Mane" && movePreview.type === "Fire"
+    attacker.ability === "Fire Mane" && effective.type === "Fire"
       ? attackingStat
       : undefined;
   const atk = makeCalcPokemon(
     attacker,
     { [attackingStat]: state.attackerStage },
-    100,
+    state.attackerHP,
     fireManeStat,
+    state.attackerAbilityActive,
+    state.alliesFainted,
   );
   const def = makeCalcPokemon(
     defender,
     { [defensiveStat]: state.defenderStage },
     state.defenderHP,
+    undefined,
+    state.defenderAbilityActive,
   );
 
   const weather = attacker.ability === "Mega Sol" ? "Sun" : state.weather || undefined;
@@ -675,15 +797,27 @@ function runDamage(
       attacker.ability === "Fairy Aura" || defender.ability === "Fairy Aura",
     attackerSide: {
       isTailwind: state.attackerTailwind,
+      isHelpingHand: state.attackerHelpingHand,
     },
     defenderSide: {
       isReflect: state.screen && movePreview.category === "Physical",
       isLightScreen: state.screen && movePreview.category === "Special",
       isTailwind: state.defenderTailwind,
+      isFriendGuard: state.defenderFriendGuard,
+      isProtected: state.defenderProtected,
     },
   } as never);
 
-  return calculate(GEN, atk, def, movePreview, field);
+  const result = calculate(GEN, atk, def, movePreview, field);
+  const quarterThroughProtection =
+    state.defenderProtected &&
+    ["Piercing Drill", "Unseen Fist"].includes(attacker.ability) &&
+    Boolean(movePreview.flags.contact) &&
+    !new Move(GEN, moveName).breaksProtect;
+  if (quarterThroughProtection) {
+    result.damage = scaleDamage(result.damage, 1, 4);
+  }
+  return result;
 }
 
 function bulkyBuild(build: Build, category: string) {
@@ -902,10 +1036,10 @@ function SpeedBanner({
   onChange: (patch: Partial<BattleState>) => void;
 }) {
   const attackerSpeed = attacker
-    ? speedValue(attacker, state.attackerSpeedStage, state.weather, state.attackerTailwind)
+    ? speedValue(attacker, state.attackerSpeedStage, state.weather, state.terrain, state.attackerTailwind, state.attackerAbilityActive)
     : 0;
   const defenderSpeed = defender
-    ? speedValue(defender, state.defenderSpeedStage, state.weather, state.defenderTailwind)
+    ? speedValue(defender, state.defenderSpeedStage, state.weather, state.terrain, state.defenderTailwind, state.defenderAbilityActive)
     : 0;
   const range = defender ? speedRange(defender) : [0, 0];
   const priority = move?.priority ?? 0;
@@ -1334,8 +1468,10 @@ function TeamLibraryModal({
       setTeamName(payload.name || `Replica ${normalized}`);
       setPendingReplicaCode(payload.replicaCode || normalized);
       setMessage(payload.detailLevel === "roster"
-        ? `Imported the ${imported.length}-Pokémon roster from ${payload.source}. That source does not publish the exact spreads on the web, so each Pokémon now receives its current most-common Stat Point spread instead of a zero spread.`
-        : `Imported ${imported.length} Pokémon with their published moves, items, natures, abilities, and Stat Point spreads from ${payload.source}. Review them, then save the team to get a permanent Champion Lens ID.`);
+        ? `Imported the ${imported.length}-Pokémon roster from ${payload.source}. That source does not publish the exact spreads as text, so each Pokémon receives its current most-common Stat Point spread and is marked for review.`
+        : payload.detailLevel === "verified-set"
+          ? `Imported all ${imported.length} Pokémon with the exact screenshot-verified moves, items, natures, and Stat Point spreads from ${payload.source}. Mega Pokémon are loaded in their evolved battle forms.`
+          : `Imported ${imported.length} Pokémon with their published moves, items, natures, abilities, and Stat Point spreads from ${payload.source}. Review them, then save the team to get a permanent Champion Lens ID.`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "That Team ID could not be imported.");
     } finally {
@@ -1502,11 +1638,20 @@ export function BattleLens() {
   const move = useMemo(() => {
     if (!moveName || !attacker) return undefined;
     try {
-      return makeMove(moveName, attacker, battle.crit, battle.spread);
+      return makeMove(moveName, attacker, battle.crit, battle.spread, battle);
     } catch {
       return undefined;
     }
-  }, [moveName, attacker, battle.crit, battle.spread]);
+  }, [moveName, attacker, battle]);
+
+  const moveDetails = useMemo(() => {
+    if (!moveName || !attacker) return undefined;
+    try {
+      return effectiveMoveFor(moveName, attacker, battle);
+    } catch {
+      return undefined;
+    }
+  }, [moveName, attacker, battle]);
 
   useEffect(() => {
     if (!opponent) {
@@ -1590,7 +1735,9 @@ export function BattleLens() {
     setLiveRows([]);
   };
 
-  const moveMeta = move ? `${move.type} · ${move.category} · ${move.bp || "—"} power${move.priority ? ` · +${move.priority} priority` : ""}` : "Choose a damaging move";
+  const moveMeta = move && moveDetails
+    ? `${moveDetails.type} · ${move.category} · ${moveDetails.basePower || "—"} power${move.priority ? ` · +${move.priority} priority` : ""}`
+    : "Choose a damaging move";
 
   return (
     <div className="app-shell">
@@ -1649,8 +1796,9 @@ export function BattleLens() {
                 </select>
               </label>
               <div className="move-meta">
-                {move && <TypeBadge type={move.type} />}
+                {moveDetails && <TypeBadge type={moveDetails.type} />}
                 <span>{moveMeta}</span>
+                {moveDetails?.note && <b title="Effective move type and power after ability, weather, or terrain">{moveDetails.note}</b>}
                 {moveName && MOVE_OVERRIDES[moveName] && <b title="Champions-specific move rebalance applied">Champions value</b>}
               </div>
             </div>
@@ -1662,6 +1810,20 @@ export function BattleLens() {
               <label className="toggle-control"><input type="checkbox" checked={battle.crit} onChange={(event) => updateBattle({ crit: event.target.checked })} /><span><Sparkles size={14} /> Critical</span></label>
               {battle.format === "Doubles" && <label className="toggle-control"><input type="checkbox" checked={battle.spread} onChange={(event) => updateBattle({ spread: event.target.checked })} /><span><Target size={14} /> Spread</span></label>}
             </div>
+            <details className="advanced-modifiers">
+              <summary><BadgeInfo size={14} /> Advanced battle modifiers <span>HP-based moves, activated abilities, ally effects, protection, and multi-hit rolls</span></summary>
+              <div className="advanced-modifier-grid">
+                <label><span>Attacker HP</span><select value={battle.attackerHP} onChange={(event) => updateBattle({ attackerHP: Number(event.target.value) })}>{[100, 75, 50, 33, 25, 10, 1].map((value) => <option key={value} value={value}>{value}%</option>)}</select></label>
+                <label><span>Fainted allies</span><select value={battle.alliesFainted} onChange={(event) => updateBattle({ alliesFainted: Number(event.target.value) })}>{[0, 1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+                {(move?.hits ?? 1) > 1 && <label><span>Move hits</span><select value={battle.moveHits} onChange={(event) => updateBattle({ moveHits: Number(event.target.value) })}><option value={0}>Standard ({move?.hits})</option>{Array.from({ length: 10 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>}
+                <label className="advanced-check"><input type="checkbox" checked={battle.attackerAbilityActive} onChange={(event) => updateBattle({ attackerAbilityActive: event.target.checked })} /><span>Attacker ability active<small>Flash Fire, Unburden, Quark Drive, Stakeout…</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.defenderAbilityActive} onChange={(event) => updateBattle({ defenderAbilityActive: event.target.checked })} /><span>Defender ability active<small>Conditional speed effects</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.attackerCharged} onChange={(event) => updateBattle({ attackerCharged: event.target.checked })} /><span>Charged<small>Charge or Electromorphosis</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.attackerHelpingHand} onChange={(event) => updateBattle({ attackerHelpingHand: event.target.checked })} /><span>Helping Hand<small>1.5× power</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.defenderFriendGuard} onChange={(event) => updateBattle({ defenderFriendGuard: event.target.checked })} /><span>Friend Guard<small>Ally damage reduction</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.defenderProtected} onChange={(event) => updateBattle({ defenderProtected: event.target.checked })} /><span>Protecting<small>Piercing Drill / Unseen Fist: ¼ damage</small></span></label>
+              </div>
+            </details>
           </div>
 
           <section className="damage-results">

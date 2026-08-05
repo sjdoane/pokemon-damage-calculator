@@ -57,6 +57,11 @@ test("ships the current Champions data, team library, and calculator engine", as
   assert.match(source, /Your team library/);
   assert.match(source, /importedSpreadIsValid/);
   assert.match(source, /current most-common Stat Point spread/);
+  assert.match(source, /Advanced battle modifiers/);
+  assert.match(source, /effectiveMoveFor/);
+  assert.match(source, /Piercing Drill/);
+  assert.match(worker, /QY3XFXCEJA/);
+  assert.match(worker, /hp: 13, atk: 0, def: 22, spa: 23, spd: 0, spe: 8/);
   assert.match(source, /Bashful/);
   assert.match(source, /Docile/);
   assert.match(source, /Hardy/);

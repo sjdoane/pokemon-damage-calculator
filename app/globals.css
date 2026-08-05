@@ -814,6 +814,89 @@ input:hover {
   padding: 12px 14px;
 }
 
+.advanced-modifiers {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  background: #080b13;
+}
+
+.advanced-modifiers summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  color: var(--text-soft);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  list-style: none;
+}
+
+.advanced-modifiers summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-modifiers summary svg {
+  color: var(--violet);
+}
+
+.advanced-modifiers summary span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.advanced-modifier-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(112px, 1fr));
+  gap: 7px;
+  padding: 0 14px 12px;
+}
+
+.advanced-modifier-grid > label > span:first-child {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.advanced-check {
+  min-height: 48px;
+  display: flex !important;
+  align-items: center;
+  gap: 7px !important;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  background: #0a0d16;
+  cursor: pointer;
+}
+
+.advanced-check input {
+  width: 13px;
+  min-height: 13px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--lime);
+}
+
+.advanced-check > span {
+  margin: 0 !important;
+  color: var(--text-soft) !important;
+  line-height: 1.2;
+}
+
+.advanced-check small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 500;
+}
+
 .field-controls label > span {
   display: flex;
   align-items: center;
@@ -1900,6 +1983,10 @@ input:hover {
     grid-template-columns: repeat(3, 1fr);
   }
 
+  .advanced-modifier-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
   .speed-range > span {
     display: none;
   }
@@ -2030,6 +2117,10 @@ input:hover {
 
   .field-controls {
     grid-template-columns: repeat(3, 1fr);
+  }
+
+  .advanced-modifier-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .damage-row {

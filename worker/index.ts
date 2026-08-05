@@ -118,6 +118,70 @@ function matchText(segment: string, pattern: RegExp) {
   return match ? htmlText(match[1]) : "";
 }
 
+// Public team directories sometimes publish a Replica ID and screenshots but
+// keep the underlying set data out of their page markup. These entries are
+// transcribed from the published in-game screens and kept deterministic so an
+// import never relies on OCR, guessing, or an AI service at runtime.
+const VERIFIED_SCREENSHOT_TEAMS: Record<string, Record<string, unknown>> = {
+  QY3XFXCEJA: {
+    name: "Cybertron's Raichu Y Balance",
+    replicaCode: "QY3XFXCEJA",
+    source: "PokeReplicas (verified screenshots)",
+    sourceUrl: "https://pokemonchampionsreplicateams.com/teams/cybertron-s-raichu-y-balance-qy3xfxceja",
+    detailLevel: "verified-set",
+    team: [
+      {
+        formName: "Mega Raichu Y",
+        item: "Raichunite Y",
+        ability: "No Guard",
+        nature: "Timid",
+        moves: ["Zap Cannon", "Focus Blast", "Fake Out", "Protect"],
+        sp: { hp: 32, atk: 0, def: 0, spa: 2, spd: 0, spe: 32 },
+      },
+      {
+        formName: "Mega Staraptor",
+        item: "Staraptite",
+        ability: "Contrary",
+        nature: "Jolly",
+        moves: ["Close Combat", "Dual Wingbeat", "Tailwind", "Protect"],
+        sp: { hp: 15, atk: 19, def: 0, spa: 0, spd: 0, spe: 32 },
+      },
+      {
+        formName: "Hisuian Arcanine",
+        item: "Focus Sash",
+        ability: "Rock Head",
+        nature: "Jolly",
+        moves: ["Flare Blitz", "Head Smash", "Extreme Speed", "Protect"],
+        sp: { hp: 2, atk: 32, def: 0, spa: 0, spd: 0, spe: 32 },
+      },
+      {
+        formName: "Farigiraf",
+        item: "Sitrus Berry",
+        ability: "Armor Tail",
+        nature: "Calm",
+        moves: ["Psychic", "Helping Hand", "Trick Room", "Protect"],
+        sp: { hp: 29, atk: 0, def: 21, spa: 0, spd: 16, spe: 0 },
+      },
+      {
+        formName: "Sylveon",
+        item: "Fairy Feather",
+        ability: "Pixilate",
+        nature: "Modest",
+        moves: ["Hyper Voice", "Quick Attack", "Hyper Beam", "Detect"],
+        sp: { hp: 13, atk: 0, def: 22, spa: 23, spd: 0, spe: 8 },
+      },
+      {
+        formName: "Kingambit",
+        item: "Life Orb",
+        ability: "Defiant",
+        nature: "Adamant",
+        moves: ["Kowtow Cleave", "Sucker Punch", "Swords Dance", "Protect"],
+        sp: { hp: 32, atk: 32, def: 0, spa: 0, spd: 1, spe: 1 },
+      },
+    ],
+  },
+};
+
 function parsePublicTeamPage(html: string, code: string, slug: string) {
   const title = matchText(html, /<h1[^>]*>([\s\S]*?)<\/h1>/) || `Replica ${code}`;
   const selectedRoster = Array.from(html.matchAll(/aria-label="Show details for ([^"]+)"/g))
@@ -289,6 +353,7 @@ async function handleTeamImport(request: Request, env: Env) {
     "SELECT id, name, team_json, replica_code, created_at, updated_at FROM saved_teams WHERE id = ?",
   ).bind(id).first<StoredTeamRow>();
   if (row) return json({ source: "Champion Lens", savedTeam: publicTeam(row) });
+  if (VERIFIED_SCREENSHOT_TEAMS[id]) return json(VERIFIED_SCREENSHOT_TEAMS[id]);
 
   try {
     const [pokeFeed, pokeReplicas] = await Promise.allSettled([
