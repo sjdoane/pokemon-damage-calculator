@@ -14,12 +14,18 @@ import {
   Check,
   ChevronRight,
   CircleGauge,
+  CloudCheck,
   CloudSun,
+  Copy,
   Crosshair,
+  Download,
   Edit3,
   Flame,
+  FolderOpen,
   Gauge,
   Info,
+  Library,
+  LoaderCircle,
   Plus,
   RefreshCw,
   Save,
@@ -29,6 +35,7 @@ import {
   Swords,
   Target,
   TimerReset,
+  Trash2,
   TriangleAlert,
   X,
   Zap,
@@ -159,17 +166,38 @@ type DamageScenario = {
   error?: string;
 };
 
+type SavedTeam = {
+  id: string;
+  name: string;
+  team: Build[];
+  replicaCode?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ImportedMember = {
+  formName: string;
+  item?: string;
+  ability?: string;
+  nature?: string;
+  moves?: string[];
+  sp?: Partial<Stats>;
+};
+
 const DATA = rawData as unknown as Dataset;
 const GEN = Generations.get(9);
 const POKEMON = DATA.pokemon.filter((pokemon) => pokemon.forms.length > 0);
 const POKEMON_BY_ID = new Map(POKEMON.map((pokemon) => [pokemon.showdownId, pokemon]));
 const NATURES = [
   "Adamant",
+  "Bashful",
   "Bold",
   "Brave",
   "Calm",
   "Careful",
+  "Docile",
   "Gentle",
+  "Hardy",
   "Hasty",
   "Impish",
   "Jolly",
@@ -180,6 +208,7 @@ const NATURES = [
   "Naive",
   "Naughty",
   "Quiet",
+  "Quirky",
   "Rash",
   "Relaxed",
   "Sassy",
@@ -187,6 +216,9 @@ const NATURES = [
   "Serious",
 ];
 const ITEMS = Array.from(GEN.items).map((item) => item.name).sort();
+const ALL_ABILITIES = Array.from(new Set(
+  POKEMON.flatMap((pokemon) => pokemon.forms.flatMap((form) => form.abilities.split("|").filter(Boolean))),
+)).sort();
 const EMPTY_STATS: Stats = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
 const SPRITE_ROOT = "https://championsbattledata.com/";
 const TEAM_STORAGE_KEY = "champion-lens-team-v1";
@@ -256,6 +288,69 @@ const DEFAULT_BATTLE: BattleState = {
 
 function uniqueId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizedName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizedTokens(value: string) {
+  return value.toLowerCase().match(/[a-z0-9]+/g)?.sort().join("") ?? "";
+}
+
+function importedBuild(member: ImportedMember, format: Format): Build | null {
+  const wanted = normalizedName(member.formName);
+  let matchedPokemon: PokemonData | undefined;
+  let matchedForm: FormData | undefined;
+
+  for (const pokemon of POKEMON) {
+    const form = pokemon.forms.find((candidate) => {
+      const aliases = [
+        candidate.form_name,
+        candidate.saved_name,
+        candidate.slug,
+        candidate.title,
+        pokemon.name,
+        pokemon.showdownId,
+        pokemon.showdownName,
+        `${pokemon.name}-${candidate.form_kind}`,
+      ];
+      const wantedTokens = normalizedTokens(member.formName);
+      return aliases.some((alias) => normalizedName(alias) === wanted || normalizedTokens(alias) === wantedTokens);
+    });
+    if (form) {
+      matchedPokemon = pokemon;
+      matchedForm = form;
+      break;
+    }
+  }
+
+  if (!matchedPokemon || !matchedForm) return null;
+  const base = commonBuild(matchedPokemon.showdownId, format);
+  const formAbilities = matchedForm.abilities.split("|").filter(Boolean);
+  const importedAbility = member.ability && formAbilities.includes(member.ability)
+    ? member.ability
+    : formAbilities[0] || member.ability || base.ability;
+  const sp: Stats = {
+    hp: Math.min(32, Math.max(0, Number(member.sp?.hp) || 0)),
+    atk: Math.min(32, Math.max(0, Number(member.sp?.atk) || 0)),
+    def: Math.min(32, Math.max(0, Number(member.sp?.def) || 0)),
+    spa: Math.min(32, Math.max(0, Number(member.sp?.spa) || 0)),
+    spd: Math.min(32, Math.max(0, Number(member.sp?.spd) || 0)),
+    spe: Math.min(32, Math.max(0, Number(member.sp?.spe) || 0)),
+  };
+  const total = Object.values(sp).reduce((sum, value) => sum + value, 0);
+
+  return {
+    ...base,
+    id: uniqueId(),
+    formSlug: matchedForm.slug,
+    nature: member.nature && NATURES.includes(member.nature) ? member.nature : base.nature,
+    ability: importedAbility,
+    item: member.item ?? base.item,
+    moves: member.moves?.length ? [...member.moves, "", "", "", ""].slice(0, 4) : base.moves,
+    sp: total <= 66 ? sp : base.sp,
+  };
 }
 
 function getPokemon(build?: Build | null) {
@@ -1089,9 +1184,10 @@ function BuilderModal({
               </label>
               <label>
                 <span>Ability</span>
-                <select value={draft.ability} onChange={(event) => setDraft((current) => ({ ...current, ability: event.target.value }))}>
-                  {form.abilities.split("|").filter(Boolean).map((ability) => <option key={ability}>{ability}</option>)}
-                </select>
+                <input list="champions-abilities" value={draft.ability} onChange={(event) => setDraft((current) => ({ ...current, ability: event.target.value }))} placeholder="Choose ability" />
+                <datalist id="champions-abilities">
+                  {Array.from(new Set([...form.abilities.split("|").filter(Boolean), ...ALL_ABILITIES])).map((ability) => <option key={ability} value={ability} />)}
+                </datalist>
               </label>
               <label className="wide-field">
                 <span>Held item</span>
@@ -1135,6 +1231,222 @@ function BuilderModal({
   );
 }
 
+function TeamLibraryModal({
+  currentTeam,
+  format,
+  onClose,
+  onLoad,
+}: {
+  currentTeam: Build[];
+  format: Format;
+  onClose: () => void;
+  onLoad: (team: Build[]) => void;
+}) {
+  const [teams, setTeams] = useState<SavedTeam[]>([]);
+  const [teamName, setTeamName] = useState("My team");
+  const [teamId, setTeamId] = useState("");
+  const [pendingReplicaCode, setPendingReplicaCode] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<"save" | "import" | string | null>(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const refresh = async () => {
+    const response = await fetch("/api/team-library", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not load your team library.");
+    setTeams(payload.teams ?? []);
+  };
+
+  useEffect(() => {
+    refresh()
+      .catch((requestError) => setError(requestError instanceof Error ? requestError.message : "Could not load your team library."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const loadTeam = (team: Build[]) => {
+    onLoad(team.slice(0, 6).map((build) => ({ ...build, id: uniqueId() })));
+    setMessage("Team loaded into the battle workspace.");
+    setError("");
+  };
+
+  const saveCurrent = async () => {
+    if (!currentTeam.length) {
+      setError("Add at least one Pokémon before saving this team.");
+      return;
+    }
+    setBusy("save");
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/team-library", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: teamName.trim() || "My team", team: currentTeam, replicaCode: pendingReplicaCode }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not save this team.");
+      await refresh();
+      setMessage(`Saved as ${payload.team.id}. Use that Team ID on any computer.`);
+      setTeamId(payload.team.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not save this team.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const importById = async () => {
+    const normalized = teamId.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!normalized) {
+      setError("Enter a Team ID first.");
+      return;
+    }
+    setBusy("import");
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/team-import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: normalized }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "That Team ID could not be imported.");
+      if (payload.savedTeam) {
+        loadTeam(payload.savedTeam.team);
+        setTeamName(payload.savedTeam.name);
+        setPendingReplicaCode(payload.savedTeam.replicaCode ?? "");
+        setMessage(`Loaded ${payload.savedTeam.name} from your Champion Lens library.`);
+        return;
+      }
+      const imported = (payload.team as ImportedMember[])
+        .map((member) => importedBuild(member, format))
+        .filter((build): build is Build => Boolean(build))
+        .slice(0, 6);
+      if (!imported.length) throw new Error("The public listing was found, but its Pokémon could not be matched to the current Champions roster.");
+      loadTeam(imported);
+      setTeamName(payload.name || `Replica ${normalized}`);
+      setPendingReplicaCode(payload.replicaCode || normalized);
+      setMessage(payload.detailLevel === "roster"
+        ? `Imported the ${imported.length}-Pokémon roster from ${payload.source}. That source does not publish every set detail on the web, so common current builds were filled in for review.`
+        : `Imported ${imported.length} Pokémon with their published sets from ${payload.source}. Review them, then save the team to get a permanent Champion Lens ID.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "That Team ID could not be imported.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteTeam = async (team: SavedTeam) => {
+    if (!window.confirm(`Delete “${team.name}” from your team library?`)) return;
+    setBusy(team.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/team-library/${team.id}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not delete this team.");
+      setTeams((current) => current.filter((entry) => entry.id !== team.id));
+      setMessage(`${team.name} was deleted.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not delete this team.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const copyId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id);
+      setMessage(`Copied Team ID ${id}.`);
+    } catch {
+      setTeamId(id);
+      setMessage(`Team ID ${id} is ready to copy from the import field.`);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="team-library-modal" role="dialog" aria-modal="true" aria-labelledby="team-library-title">
+        <header className="builder-header">
+          <div><span className="eyebrow">CLOUD TEAM STORAGE</span><h2 id="team-library-title">Your team library</h2></div>
+          <button className="icon-button" onClick={onClose} aria-label="Close team library"><X size={17} /></button>
+        </header>
+
+        <div className="library-body">
+          <section className="library-import-card">
+            <div className="library-section-title">
+              <span className="library-icon"><Download size={18} /></span>
+              <div><h3>Enter a Team ID</h3><p>Loads an exact Champion Lens ID or a publicly listed Champions Replica ID.</p></div>
+            </div>
+            <div className="library-input-row">
+              <input value={teamId} onChange={(event) => setTeamId(event.target.value.toUpperCase())} onKeyDown={(event) => event.key === "Enter" && importById()} placeholder="e.g. CL8F2A7C91 or 4122KDDUN0" aria-label="Team ID" />
+              <button className="button primary" onClick={importById} disabled={busy !== null}>
+                {busy === "import" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} Import team
+              </button>
+            </div>
+            <p className="library-helper"><Info size={13} /> Pokémon does not offer a public decoder for every private Replica ID. Publicly shared IDs are imported when a supported listing is available.</p>
+          </section>
+
+          <section className="library-save-card">
+            <div className="library-section-title">
+              <span className="library-icon lime"><CloudCheck size={18} /></span>
+              <div><h3>Save the team currently on screen</h3><p>Creates a permanent Champion Lens ID that works on your Windows or Mac browser.</p></div>
+            </div>
+            <div className="current-team-preview">
+              <div className="library-sprites">
+                {currentTeam.map((build) => <span key={build.id}><Sprite build={build} size={45} /></span>)}
+                {!currentTeam.length && <small>No Pokémon in the current team</small>}
+              </div>
+              <span>{currentTeam.length}/6</span>
+            </div>
+            <div className="library-input-row">
+              <input value={teamName} onChange={(event) => setTeamName(event.target.value)} placeholder="Team name" maxLength={80} aria-label="Name for saved team" />
+              <button className="button primary" onClick={saveCurrent} disabled={busy !== null || !currentTeam.length}>
+                {busy === "save" ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Save new team
+              </button>
+            </div>
+          </section>
+
+          <section className="saved-teams-section">
+            <div className="saved-teams-heading">
+              <div><span className="eyebrow">SAVED TEAMS</span><h3>{teams.length} in your library</h3></div>
+              {loading && <LoaderCircle className="spin" size={17} />}
+            </div>
+            {!loading && !teams.length ? (
+              <div className="library-empty"><FolderOpen size={24} /><p>Save your current team to create the first reusable Team ID.</p></div>
+            ) : (
+              <div className="saved-team-list">
+                {teams.map((team) => (
+                  <article className="saved-team-row" key={team.id}>
+                    <div className="saved-team-main">
+                      <div className="library-sprites compact">{team.team.map((build) => <span key={build.id}><Sprite build={build} size={39} /></span>)}</div>
+                      <div><strong>{team.name}</strong><button className="team-id-copy" onClick={() => copyId(team.id)} title="Copy Team ID"><code>{team.id}</code><Copy size={12} /></button></div>
+                    </div>
+                    <div className="saved-team-meta">
+                      {team.replicaCode && <span>Replica {team.replicaCode}</span>}
+                      <span>Updated {new Date(team.updatedAt).toLocaleDateString()}</span>
+                    </div>
+                    <div className="saved-team-actions">
+                      <button className="button secondary" onClick={() => loadTeam(team.team)}><FolderOpen size={14} /> Load</button>
+                      <button className="icon-button delete-team" onClick={() => deleteTeam(team)} disabled={busy === team.id} title={`Delete ${team.name}`}><Trash2 size={14} /></button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <footer className="library-footer">
+          <div aria-live="polite">{error ? <span className="library-error"><TriangleAlert size={14} />{error}</span> : message ? <span className="library-message"><Check size={14} />{message}</span> : <span>Your saved teams are available anywhere you open this private app.</span>}</div>
+          <button className="button secondary" onClick={onClose}>Done</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 export function BattleLens() {
   const [myTeam, setMyTeam] = useState<Build[]>(DEMO_TEAM);
   const [opponentTeam, setOpponentTeam] = useState<Build[]>(DEMO_OPPONENT);
@@ -1144,6 +1456,7 @@ export function BattleLens() {
   const [battle, setBattle] = useState<BattleState>(DEFAULT_BATTLE);
   const [moveName, setMoveName] = useState("");
   const [editor, setEditor] = useState<{ side: SideName; index: number } | null>(null);
+  const [teamLibraryOpen, setTeamLibraryOpen] = useState(false);
   const [liveRows, setLiveRows] = useState<LiveRow[]>([]);
   const [liveLoading, setLiveLoading] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -1288,6 +1601,7 @@ export function BattleLens() {
           <span>Current through Sep 2, 2026</span>
         </div>
         <div className="top-actions">
+          <button className="button secondary team-library-button" onClick={() => setTeamLibraryOpen(true)}><Library size={16} /> <span>My teams</span></button>
           <label className="format-select" title="Battle format">
             <Swords size={15} />
             <select value={battle.format} onChange={(event) => updateBattle({ format: event.target.value as Format })}>
@@ -1300,13 +1614,14 @@ export function BattleLens() {
       </header>
 
       <aside className="team-rail my-team">
-        <div className="rail-heading"><div><span className="eyebrow">PERSISTENT</span><h2>Your team</h2></div><span>{myTeam.length}/6</span></div>
+        <div className="rail-heading"><div><span className="eyebrow">CURRENT TEAM</span><h2>Your team</h2></div><span>{myTeam.length}/6</span></div>
         <div className="team-slots">
           {Array.from({ length: 6 }, (_, index) => (
             <TeamSlot key={myTeam[index]?.id ?? `mine-${index}`} build={myTeam[index]} index={index} active={index === myActive} side="mine" onSelect={() => { setMyActive(index); if (perspective === "mine") setMoveName(""); }} onEdit={() => setEditor({ side: "mine", index })} />
           ))}
         </div>
-        <div className="rail-note"><Save size={14} /><span>Saved automatically on this device. Your team stays when you start a new battle.</span></div>
+        <button className="team-library-rail-button" onClick={() => setTeamLibraryOpen(true)}><Library size={15} /><span><strong>Team library</strong><small>Save, load, or enter a Team ID</small></span><ChevronRight size={15} /></button>
+        <div className="rail-note"><Save size={14} /><span>This team remains your local draft. Save named teams to your library for Windows and Mac access.</span></div>
       </aside>
 
       <main className="battle-workspace">
@@ -1386,6 +1701,19 @@ export function BattleLens() {
           format={battle.format}
           onClose={() => setEditor(null)}
           onSave={saveEditor}
+        />
+      )}
+      {teamLibraryOpen && (
+        <TeamLibraryModal
+          currentTeam={myTeam}
+          format={battle.format}
+          onClose={() => setTeamLibraryOpen(false)}
+          onLoad={(team) => {
+            setMyTeam(team);
+            setMyActive(0);
+            setPerspective("mine");
+            setMoveName("");
+          }}
         />
       )}
     </div>
