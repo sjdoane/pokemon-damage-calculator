@@ -14,12 +14,18 @@ import {
   Check,
   ChevronRight,
   CircleGauge,
+  CloudCheck,
   CloudSun,
+  Copy,
   Crosshair,
+  Download,
   Edit3,
   Flame,
+  FolderOpen,
   Gauge,
   Info,
+  Library,
+  LoaderCircle,
   Plus,
   RefreshCw,
   Save,
@@ -29,6 +35,7 @@ import {
   Swords,
   Target,
   TimerReset,
+  Trash2,
   TriangleAlert,
   X,
   Zap,
@@ -43,6 +50,7 @@ import {
   type Result,
 } from "@smogon/calc";
 import rawData from "./data/champions-data.json";
+import { effectiveMoveDetails, scaleDamage } from "./champions-mechanics";
 
 type StatKey = "hp" | "atk" | "def" | "spa" | "spd" | "spe";
 type Status = "" | "brn" | "par" | "psn" | "tox" | "slp" | "frz";
@@ -131,6 +139,15 @@ type BattleState = {
   defenderSpeedStage: number;
   attackerTailwind: boolean;
   defenderTailwind: boolean;
+  attackerAbilityActive: boolean;
+  defenderAbilityActive: boolean;
+  attackerHP: number;
+  attackerCharged: boolean;
+  attackerHelpingHand: boolean;
+  defenderFriendGuard: boolean;
+  defenderProtected: boolean;
+  alliesFainted: number;
+  moveHits: number;
   screen: boolean;
   crit: boolean;
   spread: boolean;
@@ -159,17 +176,38 @@ type DamageScenario = {
   error?: string;
 };
 
+type SavedTeam = {
+  id: string;
+  name: string;
+  team: Build[];
+  replicaCode?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ImportedMember = {
+  formName: string;
+  item?: string;
+  ability?: string;
+  nature?: string;
+  moves?: string[];
+  sp?: Partial<Stats>;
+};
+
 const DATA = rawData as unknown as Dataset;
 const GEN = Generations.get(9);
 const POKEMON = DATA.pokemon.filter((pokemon) => pokemon.forms.length > 0);
 const POKEMON_BY_ID = new Map(POKEMON.map((pokemon) => [pokemon.showdownId, pokemon]));
 const NATURES = [
   "Adamant",
+  "Bashful",
   "Bold",
   "Brave",
   "Calm",
   "Careful",
+  "Docile",
   "Gentle",
+  "Hardy",
   "Hasty",
   "Impish",
   "Jolly",
@@ -180,6 +218,7 @@ const NATURES = [
   "Naive",
   "Naughty",
   "Quiet",
+  "Quirky",
   "Rash",
   "Relaxed",
   "Sassy",
@@ -187,6 +226,9 @@ const NATURES = [
   "Serious",
 ];
 const ITEMS = Array.from(GEN.items).map((item) => item.name).sort();
+const ALL_ABILITIES = Array.from(new Set(
+  POKEMON.flatMap((pokemon) => pokemon.forms.flatMap((form) => form.abilities.split("|").filter(Boolean))),
+)).sort();
 const EMPTY_STATS: Stats = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
 const SPRITE_ROOT = "https://championsbattledata.com/";
 const TEAM_STORAGE_KEY = "champion-lens-team-v1";
@@ -248,6 +290,15 @@ const DEFAULT_BATTLE: BattleState = {
   defenderSpeedStage: 0,
   attackerTailwind: false,
   defenderTailwind: false,
+  attackerAbilityActive: false,
+  defenderAbilityActive: false,
+  attackerHP: 100,
+  attackerCharged: false,
+  attackerHelpingHand: false,
+  defenderFriendGuard: false,
+  defenderProtected: false,
+  alliesFainted: 0,
+  moveHits: 0,
   screen: false,
   crit: false,
   spread: true,
@@ -256,6 +307,83 @@ const DEFAULT_BATTLE: BattleState = {
 
 function uniqueId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizedName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizedTokens(value: string) {
+  return value.toLowerCase().match(/[a-z0-9]+/g)?.sort().join("") ?? "";
+}
+
+function importedBuild(member: ImportedMember, format: Format): Build | null {
+  const wanted = normalizedName(member.formName);
+  const wantedTokens = normalizedTokens(member.formName);
+  const matches: Array<{ pokemon: PokemonData; form: FormData; score: number }> = [];
+
+  for (const pokemon of POKEMON) {
+    for (const candidate of pokemon.forms) {
+      const aliases = [
+        candidate.form_name,
+        candidate.saved_name,
+        candidate.slug,
+        candidate.title,
+        pokemon.name,
+        pokemon.showdownId,
+        pokemon.showdownName,
+        `${pokemon.name}-${candidate.form_kind}`,
+      ];
+      const exactAliases = aliases.filter((alias) => normalizedName(alias) === wanted);
+      const tokenAliases = aliases.filter((alias) => normalizedTokens(alias) === wantedTokens);
+      if (!exactAliases.length && !tokenAliases.length) continue;
+      const pokemonName = normalizedName(pokemon.name);
+      const formName = normalizedName(candidate.form_name);
+      const score =
+        exactAliases.length * 100 +
+        tokenAliases.length * 20 +
+        (formName === wanted ? 80 : 0) +
+        (pokemonName === wanted ? 60 : 0) +
+        (pokemonName && wanted.includes(pokemonName) ? pokemonName.length : 0);
+      matches.push({ pokemon, form: candidate, score });
+    }
+  }
+
+  matches.sort((left, right) => right.score - left.score);
+  const matchedPokemon = matches[0]?.pokemon;
+  const matchedForm = matches[0]?.form;
+
+  if (!matchedPokemon || !matchedForm) return null;
+  const base = commonBuild(matchedPokemon.showdownId, format);
+  const formAbilities = matchedForm.abilities.split("|").filter(Boolean);
+  const importedAbility = member.ability
+    ? formAbilities.includes(member.ability)
+      ? member.ability
+      : matchedForm.form_kind === "Mega"
+        ? formAbilities[0] || base.ability
+        : member.ability
+    : base.ability;
+  const sp: Stats = {
+    hp: Math.min(32, Math.max(0, Number(member.sp?.hp) || 0)),
+    atk: Math.min(32, Math.max(0, Number(member.sp?.atk) || 0)),
+    def: Math.min(32, Math.max(0, Number(member.sp?.def) || 0)),
+    spa: Math.min(32, Math.max(0, Number(member.sp?.spa) || 0)),
+    spd: Math.min(32, Math.max(0, Number(member.sp?.spd) || 0)),
+    spe: Math.min(32, Math.max(0, Number(member.sp?.spe) || 0)),
+  };
+  const total = Object.values(sp).reduce((sum, value) => sum + value, 0);
+  const importedSpreadIsValid = Boolean(member.sp) && total <= 66;
+
+  return {
+    ...base,
+    id: uniqueId(),
+    formSlug: matchedForm.slug,
+    nature: member.nature && NATURES.includes(member.nature) ? member.nature : base.nature,
+    ability: importedAbility,
+    item: member.item ?? base.item,
+    moves: member.moves?.length ? [...member.moves, "", "", "", ""].slice(0, 4) : base.moves,
+    sp: importedSpreadIsValid ? sp : base.sp,
+  };
 }
 
 function getPokemon(build?: Build | null) {
@@ -409,15 +537,26 @@ function stageMultiplier(stage: number) {
   return stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
 }
 
+function highestNonHPStat(stats: Stats): Exclude<StatKey, "hp"> {
+  return (["def", "spa", "spd", "spe"] as const).reduce<Exclude<StatKey, "hp">>(
+    (best, stat) => stats[stat] > stats[best] ? stat : best,
+    "atk",
+  );
+}
+
 function speedValue(
   build: Build,
   stage: number,
   weather: BattleState["weather"],
+  terrain: BattleState["terrain"],
   tailwind: boolean,
+  abilityActive: boolean,
 ) {
-  let speed = visibleStats(build).spe;
+  const stats = visibleStats(build);
+  let speed = stats.spe;
   speed = Math.floor(speed * stageMultiplier(stage));
-  if (build.status === "par") speed = Math.floor(speed / 2);
+  const quickFeet = build.ability === "Quick Feet" && Boolean(build.status);
+  if (build.status === "par" && !quickFeet) speed = Math.floor(speed / 2);
   if (build.item === "Choice Scarf") speed = Math.floor(speed * 1.5);
   if (build.item === "Iron Ball" || build.item === "Macho Brace") speed = Math.floor(speed / 2);
   if (
@@ -427,6 +566,22 @@ function speedValue(
     (build.ability === "Slush Rush" && weather === "Snow")
   ) {
     speed *= 2;
+  }
+  if (build.ability === "Surge Surfer" && terrain === "Electric") speed *= 2;
+  if (quickFeet) speed = Math.floor(speed * 1.5);
+  if (build.ability === "Unburden" && abilityActive) speed *= 2;
+  if (build.ability === "Slow Start" && abilityActive) speed = Math.floor(speed / 2);
+  const paradoxActive =
+    abilityActive ||
+    build.item === "Booster Energy" ||
+    (build.ability === "Protosynthesis" && weather === "Sun") ||
+    (build.ability === "Quark Drive" && terrain === "Electric");
+  if (
+    paradoxActive &&
+    ["Protosynthesis", "Quark Drive"].includes(build.ability) &&
+    highestNonHPStat(stats) === "spe"
+  ) {
+    speed = Math.floor(speed * 1.5);
   }
   if (tailwind) speed *= 2;
   return Math.floor(speed);
@@ -450,6 +605,41 @@ function calcNameFor(pokemon: PokemonData, form: FormData) {
   return `${base.replace(/\s+/g, "-")}-Mega${suffix ? `-${suffix}` : ""}`;
 }
 
+function isGrounded(build: Build) {
+  const form = getForm(build);
+  if (!form) return true;
+  if (build.item === "Iron Ball") return true;
+  return !form.types.includes("Flying") && !["Levitate", "Eelevate"].includes(build.ability);
+}
+
+function effectiveMoveFor(name: string, build: Build, state: BattleState) {
+  const initial = new Move(GEN, name);
+  const champions = MOVE_OVERRIDES[name];
+  const form = getForm(build);
+  const effective = effectiveMoveDetails({
+    name,
+    type: champions?.type ?? initial.type,
+    basePower: champions?.basePower ?? initial.bp,
+    category: champions?.category ?? initial.category,
+    isSound: Boolean(initial.flags.sound),
+  }, {
+    ability: build.ability,
+    item: build.item,
+    weather: state.weather,
+    terrain: state.terrain,
+    primaryType: form?.types[0],
+    grounded: isGrounded(build),
+  });
+  if (state.attackerCharged && effective.type === "Electric" && effective.basePower > 0) {
+    return {
+      ...effective,
+      basePower: effective.basePower * 2,
+      note: `${effective.note ? `${effective.note} · ` : ""}Charged: 2× power`,
+    };
+  }
+  return effective;
+}
+
 function findBaseForTarget(
   stat: Exclude<StatKey, "hp">,
   target: number,
@@ -463,7 +653,7 @@ function findBaseForTarget(
   return Math.max(1, target - sp - 20);
 }
 
-function makeMove(name: string, build: Build, crit: boolean, spread: boolean) {
+function makeMove(name: string, build: Build, crit: boolean, spread: boolean, state?: BattleState) {
   const initial = new Move(GEN, name);
   const champions = MOVE_OVERRIDES[name];
   const overrides: Record<string, unknown> = champions
@@ -475,15 +665,33 @@ function makeMove(name: string, build: Build, crit: boolean, spread: boolean) {
     : {};
   const type = champions?.type ?? initial.type;
   const basePower = champions?.basePower ?? initial.bp;
+  const effective = state ? effectiveMoveFor(name, build, state) : null;
 
   if (build.ability === "Dragonize" && type === "Normal" && basePower > 0) {
     overrides.type = "Dragon";
     overrides.basePower = Math.floor(basePower * 1.2);
   }
+  if (state?.attackerCharged && effective?.type === "Electric" && basePower > 0) {
+    if (type === "Electric" || name === "Terrain Pulse") {
+      overrides.basePower = basePower * 2;
+    } else if (build.ability === "Galvanize" && type === "Normal") {
+      overrides.type = "Electric";
+      overrides.basePower = effective.basePower;
+    }
+  }
+  const piercesProtection =
+    state?.defenderProtected &&
+    ["Piercing Drill", "Unseen Fist"].includes(build.ability) &&
+    Boolean(initial.flags.contact) &&
+    !initial.breaksProtect;
+  if (piercesProtection) overrides.breaksProtect = true;
   if (!spread) overrides.target = "any";
 
   return new Move(GEN, name, {
+    ability: build.ability as never,
+    item: build.item as never,
     isCrit: crit,
+    hits: state?.moveHits || undefined,
     overrides: overrides as never,
   });
 }
@@ -493,6 +701,8 @@ function makeCalcPokemon(
   boosts: Partial<Stats>,
   currentHPPercent = 100,
   fireManeStat?: "atk" | "spa",
+  abilityActive = false,
+  alliesFainted = 0,
 ) {
   const pokemon = getPokemon(build);
   const form = getForm(build);
@@ -512,10 +722,17 @@ function makeCalcPokemon(
   const displayStats = visibleStats(build);
   const currentHP = Math.max(1, Math.floor((displayStats.hp * currentHPPercent) / 100));
   const ability = build.ability === "Eelevate" ? "Levitate" : build.ability;
+  const boostedStat =
+    abilityActive && ["Protosynthesis", "Quark Drive"].includes(build.ability)
+      ? highestNonHPStat(displayStats)
+      : "auto";
   const options = {
     level: 50,
     nature: build.nature,
     ability,
+    abilityOn: abilityActive,
+    alliesFainted,
+    boostedStat,
     item: build.item || undefined,
     status: build.status,
     evs: Object.fromEntries(
@@ -547,23 +764,28 @@ function runDamage(
   state: BattleState,
   crit = state.crit,
 ) {
-  const movePreview = makeMove(moveName, attacker, crit, state.spread);
+  const movePreview = makeMove(moveName, attacker, crit, state.spread, state);
+  const effective = effectiveMoveFor(moveName, attacker, state);
   const attackingStat = movePreview.category === "Physical" ? "atk" : "spa";
   const defensiveStat = movePreview.category === "Physical" ? "def" : "spd";
   const fireManeStat =
-    attacker.ability === "Fire Mane" && movePreview.type === "Fire"
+    attacker.ability === "Fire Mane" && effective.type === "Fire"
       ? attackingStat
       : undefined;
   const atk = makeCalcPokemon(
     attacker,
     { [attackingStat]: state.attackerStage },
-    100,
+    state.attackerHP,
     fireManeStat,
+    state.attackerAbilityActive,
+    state.alliesFainted,
   );
   const def = makeCalcPokemon(
     defender,
     { [defensiveStat]: state.defenderStage },
     state.defenderHP,
+    undefined,
+    state.defenderAbilityActive,
   );
 
   const weather = attacker.ability === "Mega Sol" ? "Sun" : state.weather || undefined;
@@ -575,15 +797,27 @@ function runDamage(
       attacker.ability === "Fairy Aura" || defender.ability === "Fairy Aura",
     attackerSide: {
       isTailwind: state.attackerTailwind,
+      isHelpingHand: state.attackerHelpingHand,
     },
     defenderSide: {
       isReflect: state.screen && movePreview.category === "Physical",
       isLightScreen: state.screen && movePreview.category === "Special",
       isTailwind: state.defenderTailwind,
+      isFriendGuard: state.defenderFriendGuard,
+      isProtected: state.defenderProtected,
     },
   } as never);
 
-  return calculate(GEN, atk, def, movePreview, field);
+  const result = calculate(GEN, atk, def, movePreview, field);
+  const quarterThroughProtection =
+    state.defenderProtected &&
+    ["Piercing Drill", "Unseen Fist"].includes(attacker.ability) &&
+    Boolean(movePreview.flags.contact) &&
+    !new Move(GEN, moveName).breaksProtect;
+  if (quarterThroughProtection) {
+    result.damage = scaleDamage(result.damage, 1, 4);
+  }
+  return result;
 }
 
 function bulkyBuild(build: Build, category: string) {
@@ -802,10 +1036,10 @@ function SpeedBanner({
   onChange: (patch: Partial<BattleState>) => void;
 }) {
   const attackerSpeed = attacker
-    ? speedValue(attacker, state.attackerSpeedStage, state.weather, state.attackerTailwind)
+    ? speedValue(attacker, state.attackerSpeedStage, state.weather, state.terrain, state.attackerTailwind, state.attackerAbilityActive)
     : 0;
   const defenderSpeed = defender
-    ? speedValue(defender, state.defenderSpeedStage, state.weather, state.defenderTailwind)
+    ? speedValue(defender, state.defenderSpeedStage, state.weather, state.terrain, state.defenderTailwind, state.defenderAbilityActive)
     : 0;
   const range = defender ? speedRange(defender) : [0, 0];
   const priority = move?.priority ?? 0;
@@ -1089,9 +1323,10 @@ function BuilderModal({
               </label>
               <label>
                 <span>Ability</span>
-                <select value={draft.ability} onChange={(event) => setDraft((current) => ({ ...current, ability: event.target.value }))}>
-                  {form.abilities.split("|").filter(Boolean).map((ability) => <option key={ability}>{ability}</option>)}
-                </select>
+                <input list="champions-abilities" value={draft.ability} onChange={(event) => setDraft((current) => ({ ...current, ability: event.target.value }))} placeholder="Choose ability" />
+                <datalist id="champions-abilities">
+                  {Array.from(new Set([...form.abilities.split("|").filter(Boolean), ...ALL_ABILITIES])).map((ability) => <option key={ability} value={ability} />)}
+                </datalist>
               </label>
               <label className="wide-field">
                 <span>Held item</span>
@@ -1135,6 +1370,224 @@ function BuilderModal({
   );
 }
 
+function TeamLibraryModal({
+  currentTeam,
+  format,
+  onClose,
+  onLoad,
+}: {
+  currentTeam: Build[];
+  format: Format;
+  onClose: () => void;
+  onLoad: (team: Build[]) => void;
+}) {
+  const [teams, setTeams] = useState<SavedTeam[]>([]);
+  const [teamName, setTeamName] = useState("My team");
+  const [teamId, setTeamId] = useState("");
+  const [pendingReplicaCode, setPendingReplicaCode] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<"save" | "import" | string | null>(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const refresh = async () => {
+    const response = await fetch("/api/team-library", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not load your team library.");
+    setTeams(payload.teams ?? []);
+  };
+
+  useEffect(() => {
+    refresh()
+      .catch((requestError) => setError(requestError instanceof Error ? requestError.message : "Could not load your team library."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const loadTeam = (team: Build[]) => {
+    onLoad(team.slice(0, 6).map((build) => ({ ...build, id: uniqueId() })));
+    setMessage("Team loaded into the battle workspace.");
+    setError("");
+  };
+
+  const saveCurrent = async () => {
+    if (!currentTeam.length) {
+      setError("Add at least one Pokémon before saving this team.");
+      return;
+    }
+    setBusy("save");
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/team-library", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: teamName.trim() || "My team", team: currentTeam, replicaCode: pendingReplicaCode }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not save this team.");
+      await refresh();
+      setMessage(`Saved as ${payload.team.id}. Use that Team ID on any computer.`);
+      setTeamId(payload.team.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not save this team.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const importById = async () => {
+    const normalized = teamId.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!normalized) {
+      setError("Enter a Team ID first.");
+      return;
+    }
+    setBusy("import");
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/team-import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: normalized }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "That Team ID could not be imported.");
+      if (payload.savedTeam) {
+        loadTeam(payload.savedTeam.team);
+        setTeamName(payload.savedTeam.name);
+        setPendingReplicaCode(payload.savedTeam.replicaCode ?? "");
+        setMessage(`Loaded ${payload.savedTeam.name} from your Champion Lens library.`);
+        return;
+      }
+      const imported = (payload.team as ImportedMember[])
+        .map((member) => importedBuild(member, format))
+        .filter((build): build is Build => Boolean(build))
+        .slice(0, 6);
+      if (!imported.length) throw new Error("The public listing was found, but its Pokémon could not be matched to the current Champions roster.");
+      loadTeam(imported);
+      setTeamName(payload.name || `Replica ${normalized}`);
+      setPendingReplicaCode(payload.replicaCode || normalized);
+      setMessage(payload.detailLevel === "roster"
+        ? `Imported the ${imported.length}-Pokémon roster from ${payload.source}. That source does not publish the exact spreads as text, so each Pokémon receives its current most-common Stat Point spread and is marked for review.`
+        : payload.detailLevel === "verified-set"
+          ? `Imported all ${imported.length} Pokémon with the exact screenshot-verified moves, items, natures, and Stat Point spreads from ${payload.source}. Mega Pokémon are loaded in their evolved battle forms.`
+          : `Imported ${imported.length} Pokémon with their published moves, items, natures, abilities, and Stat Point spreads from ${payload.source}. Review them, then save the team to get a permanent Champion Lens ID.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "That Team ID could not be imported.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteTeam = async (team: SavedTeam) => {
+    if (!window.confirm(`Delete “${team.name}” from your team library?`)) return;
+    setBusy(team.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/team-library/${team.id}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not delete this team.");
+      setTeams((current) => current.filter((entry) => entry.id !== team.id));
+      setMessage(`${team.name} was deleted.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not delete this team.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const copyId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id);
+      setMessage(`Copied Team ID ${id}.`);
+    } catch {
+      setTeamId(id);
+      setMessage(`Team ID ${id} is ready to copy from the import field.`);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="team-library-modal" role="dialog" aria-modal="true" aria-labelledby="team-library-title">
+        <header className="builder-header">
+          <div><span className="eyebrow">CLOUD TEAM STORAGE</span><h2 id="team-library-title">Your team library</h2></div>
+          <button className="icon-button" onClick={onClose} aria-label="Close team library"><X size={17} /></button>
+        </header>
+
+        <div className="library-body">
+          <section className="library-import-card">
+            <div className="library-section-title">
+              <span className="library-icon"><Download size={18} /></span>
+              <div><h3>Enter a Team ID</h3><p>Loads an exact Champion Lens ID or a publicly listed Champions Replica ID.</p></div>
+            </div>
+            <div className="library-input-row">
+              <input value={teamId} onChange={(event) => setTeamId(event.target.value.toUpperCase())} onKeyDown={(event) => event.key === "Enter" && importById()} placeholder="e.g. CL8F2A7C91 or 4122KDDUN0" aria-label="Team ID" />
+              <button className="button primary" onClick={importById} disabled={busy !== null}>
+                {busy === "import" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} Import team
+              </button>
+            </div>
+            <p className="library-helper"><Info size={13} /> Pokémon does not offer a public decoder for every private Replica ID. Publicly shared IDs are imported when a supported listing is available.</p>
+          </section>
+
+          <section className="library-save-card">
+            <div className="library-section-title">
+              <span className="library-icon lime"><CloudCheck size={18} /></span>
+              <div><h3>Save the team currently on screen</h3><p>Creates a permanent Champion Lens ID that works on your Windows or Mac browser.</p></div>
+            </div>
+            <div className="current-team-preview">
+              <div className="library-sprites">
+                {currentTeam.map((build) => <span key={build.id}><Sprite build={build} size={45} /></span>)}
+                {!currentTeam.length && <small>No Pokémon in the current team</small>}
+              </div>
+              <span>{currentTeam.length}/6</span>
+            </div>
+            <div className="library-input-row">
+              <input value={teamName} onChange={(event) => setTeamName(event.target.value)} placeholder="Team name" maxLength={80} aria-label="Name for saved team" />
+              <button className="button primary" onClick={saveCurrent} disabled={busy !== null || !currentTeam.length}>
+                {busy === "save" ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Save new team
+              </button>
+            </div>
+          </section>
+
+          <section className="saved-teams-section">
+            <div className="saved-teams-heading">
+              <div><span className="eyebrow">SAVED TEAMS</span><h3>{teams.length} in your library</h3></div>
+              {loading && <LoaderCircle className="spin" size={17} />}
+            </div>
+            {!loading && !teams.length ? (
+              <div className="library-empty"><FolderOpen size={24} /><p>Save your current team to create the first reusable Team ID.</p></div>
+            ) : (
+              <div className="saved-team-list">
+                {teams.map((team) => (
+                  <article className="saved-team-row" key={team.id}>
+                    <div className="saved-team-main">
+                      <div className="library-sprites compact">{team.team.map((build) => <span key={build.id}><Sprite build={build} size={39} /></span>)}</div>
+                      <div><strong>{team.name}</strong><button className="team-id-copy" onClick={() => copyId(team.id)} title="Copy Team ID"><code>{team.id}</code><Copy size={12} /></button></div>
+                    </div>
+                    <div className="saved-team-meta">
+                      {team.replicaCode && <span>Replica {team.replicaCode}</span>}
+                      <span>Updated {new Date(team.updatedAt).toLocaleDateString()}</span>
+                    </div>
+                    <div className="saved-team-actions">
+                      <button className="button secondary" onClick={() => loadTeam(team.team)}><FolderOpen size={14} /> Load</button>
+                      <button className="icon-button delete-team" onClick={() => deleteTeam(team)} disabled={busy === team.id} title={`Delete ${team.name}`}><Trash2 size={14} /></button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <footer className="library-footer">
+          <div aria-live="polite">{error ? <span className="library-error"><TriangleAlert size={14} />{error}</span> : message ? <span className="library-message"><Check size={14} />{message}</span> : <span>Your saved teams are available anywhere you open this private app.</span>}</div>
+          <button className="button secondary" onClick={onClose}>Done</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 export function BattleLens() {
   const [myTeam, setMyTeam] = useState<Build[]>(DEMO_TEAM);
   const [opponentTeam, setOpponentTeam] = useState<Build[]>(DEMO_OPPONENT);
@@ -1144,6 +1597,7 @@ export function BattleLens() {
   const [battle, setBattle] = useState<BattleState>(DEFAULT_BATTLE);
   const [moveName, setMoveName] = useState("");
   const [editor, setEditor] = useState<{ side: SideName; index: number } | null>(null);
+  const [teamLibraryOpen, setTeamLibraryOpen] = useState(false);
   const [liveRows, setLiveRows] = useState<LiveRow[]>([]);
   const [liveLoading, setLiveLoading] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -1184,11 +1638,20 @@ export function BattleLens() {
   const move = useMemo(() => {
     if (!moveName || !attacker) return undefined;
     try {
-      return makeMove(moveName, attacker, battle.crit, battle.spread);
+      return makeMove(moveName, attacker, battle.crit, battle.spread, battle);
     } catch {
       return undefined;
     }
-  }, [moveName, attacker, battle.crit, battle.spread]);
+  }, [moveName, attacker, battle]);
+
+  const moveDetails = useMemo(() => {
+    if (!moveName || !attacker) return undefined;
+    try {
+      return effectiveMoveFor(moveName, attacker, battle);
+    } catch {
+      return undefined;
+    }
+  }, [moveName, attacker, battle]);
 
   useEffect(() => {
     if (!opponent) {
@@ -1272,7 +1735,9 @@ export function BattleLens() {
     setLiveRows([]);
   };
 
-  const moveMeta = move ? `${move.type} · ${move.category} · ${move.bp || "—"} power${move.priority ? ` · +${move.priority} priority` : ""}` : "Choose a damaging move";
+  const moveMeta = move && moveDetails
+    ? `${moveDetails.type} · ${move.category} · ${moveDetails.basePower || "—"} power${move.priority ? ` · +${move.priority} priority` : ""}`
+    : "Choose a damaging move";
 
   return (
     <div className="app-shell">
@@ -1288,6 +1753,7 @@ export function BattleLens() {
           <span>Current through Sep 2, 2026</span>
         </div>
         <div className="top-actions">
+          <button className="button secondary team-library-button" onClick={() => setTeamLibraryOpen(true)}><Library size={16} /> <span>My teams</span></button>
           <label className="format-select" title="Battle format">
             <Swords size={15} />
             <select value={battle.format} onChange={(event) => updateBattle({ format: event.target.value as Format })}>
@@ -1300,13 +1766,14 @@ export function BattleLens() {
       </header>
 
       <aside className="team-rail my-team">
-        <div className="rail-heading"><div><span className="eyebrow">PERSISTENT</span><h2>Your team</h2></div><span>{myTeam.length}/6</span></div>
+        <div className="rail-heading"><div><span className="eyebrow">CURRENT TEAM</span><h2>Your team</h2></div><span>{myTeam.length}/6</span></div>
         <div className="team-slots">
           {Array.from({ length: 6 }, (_, index) => (
             <TeamSlot key={myTeam[index]?.id ?? `mine-${index}`} build={myTeam[index]} index={index} active={index === myActive} side="mine" onSelect={() => { setMyActive(index); if (perspective === "mine") setMoveName(""); }} onEdit={() => setEditor({ side: "mine", index })} />
           ))}
         </div>
-        <div className="rail-note"><Save size={14} /><span>Saved automatically on this device. Your team stays when you start a new battle.</span></div>
+        <button className="team-library-rail-button" onClick={() => setTeamLibraryOpen(true)}><Library size={15} /><span><strong>Team library</strong><small>Save, load, or enter a Team ID</small></span><ChevronRight size={15} /></button>
+        <div className="rail-note"><Save size={14} /><span>This team remains your local draft. Save named teams to your library for Windows and Mac access.</span></div>
       </aside>
 
       <main className="battle-workspace">
@@ -1329,8 +1796,9 @@ export function BattleLens() {
                 </select>
               </label>
               <div className="move-meta">
-                {move && <TypeBadge type={move.type} />}
+                {moveDetails && <TypeBadge type={moveDetails.type} />}
                 <span>{moveMeta}</span>
+                {moveDetails?.note && <b title="Effective move type and power after ability, weather, or terrain">{moveDetails.note}</b>}
                 {moveName && MOVE_OVERRIDES[moveName] && <b title="Champions-specific move rebalance applied">Champions value</b>}
               </div>
             </div>
@@ -1342,6 +1810,20 @@ export function BattleLens() {
               <label className="toggle-control"><input type="checkbox" checked={battle.crit} onChange={(event) => updateBattle({ crit: event.target.checked })} /><span><Sparkles size={14} /> Critical</span></label>
               {battle.format === "Doubles" && <label className="toggle-control"><input type="checkbox" checked={battle.spread} onChange={(event) => updateBattle({ spread: event.target.checked })} /><span><Target size={14} /> Spread</span></label>}
             </div>
+            <details className="advanced-modifiers">
+              <summary><BadgeInfo size={14} /> Advanced battle modifiers <span>HP-based moves, activated abilities, ally effects, protection, and multi-hit rolls</span></summary>
+              <div className="advanced-modifier-grid">
+                <label><span>Attacker HP</span><select value={battle.attackerHP} onChange={(event) => updateBattle({ attackerHP: Number(event.target.value) })}>{[100, 75, 50, 33, 25, 10, 1].map((value) => <option key={value} value={value}>{value}%</option>)}</select></label>
+                <label><span>Fainted allies</span><select value={battle.alliesFainted} onChange={(event) => updateBattle({ alliesFainted: Number(event.target.value) })}>{[0, 1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+                {(move?.hits ?? 1) > 1 && <label><span>Move hits</span><select value={battle.moveHits} onChange={(event) => updateBattle({ moveHits: Number(event.target.value) })}><option value={0}>Standard ({move?.hits})</option>{Array.from({ length: 10 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>}
+                <label className="advanced-check"><input type="checkbox" checked={battle.attackerAbilityActive} onChange={(event) => updateBattle({ attackerAbilityActive: event.target.checked })} /><span>Attacker ability active<small>Flash Fire, Unburden, Quark Drive, Stakeout…</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.defenderAbilityActive} onChange={(event) => updateBattle({ defenderAbilityActive: event.target.checked })} /><span>Defender ability active<small>Conditional speed effects</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.attackerCharged} onChange={(event) => updateBattle({ attackerCharged: event.target.checked })} /><span>Charged<small>Charge or Electromorphosis</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.attackerHelpingHand} onChange={(event) => updateBattle({ attackerHelpingHand: event.target.checked })} /><span>Helping Hand<small>1.5× power</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.defenderFriendGuard} onChange={(event) => updateBattle({ defenderFriendGuard: event.target.checked })} /><span>Friend Guard<small>Ally damage reduction</small></span></label>
+                <label className="advanced-check"><input type="checkbox" checked={battle.defenderProtected} onChange={(event) => updateBattle({ defenderProtected: event.target.checked })} /><span>Protecting<small>Piercing Drill / Unseen Fist: ¼ damage</small></span></label>
+              </div>
+            </details>
           </div>
 
           <section className="damage-results">
@@ -1386,6 +1868,19 @@ export function BattleLens() {
           format={battle.format}
           onClose={() => setEditor(null)}
           onSave={saveEditor}
+        />
+      )}
+      {teamLibraryOpen && (
+        <TeamLibraryModal
+          currentTeam={myTeam}
+          format={battle.format}
+          onClose={() => setTeamLibraryOpen(false)}
+          onLoad={(team) => {
+            setMyTeam(team);
+            setMyActive(0);
+            setPerspective("mine");
+            setMoveName("");
+          }}
         />
       )}
     </div>

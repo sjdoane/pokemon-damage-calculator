@@ -38,11 +38,13 @@ test("server-renders the Champion Lens battle workspace", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
-test("ships the current Champions data and calculator engine", async () => {
-  const [source, dataset, packageJson] = await Promise.all([
+test("ships the current Champions data, team library, and calculator engine", async () => {
+  const [source, worker, dataset, packageJson, migration] = await Promise.all([
     readFile(new URL("../app/BattleLens.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/data/champions-data.json", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0000_team_library.sql", import.meta.url), "utf8"),
   ]);
   const parsed = JSON.parse(dataset);
 
@@ -52,5 +54,24 @@ test("ships the current Champions data and calculator engine", async () => {
   assert.match(source, /66 SP/);
   assert.match(source, /16 EXACT DAMAGE ROLLS/);
   assert.match(source, /TEAM_STORAGE_KEY/);
+  assert.match(source, /Your team library/);
+  assert.match(source, /importedSpreadIsValid/);
+  assert.match(source, /current most-common Stat Point spread/);
+  assert.match(source, /Advanced battle modifiers/);
+  assert.match(source, /effectiveMoveFor/);
+  assert.match(source, /Piercing Drill/);
+  assert.match(worker, /QY3XFXCEJA/);
+  assert.match(worker, /hp: 13, atk: 0, def: 22, spa: 23, spd: 0, spe: 8/);
+  assert.match(worker, /UX9P70XUW8/);
+  assert.match(worker, /hp: 27, atk: 14, def: 0, spa: 0, spd: 0, spe: 25/);
+  assert.match(worker, /hp: 4, atk: 32, def: 0, spa: 0, spd: 0, spe: 30/);
+  assert.match(source, /Bashful/);
+  assert.match(source, /Docile/);
+  assert.match(source, /Hardy/);
+  assert.match(source, /Quirky/);
+  assert.match(dataset, /Defiant/);
+  assert.match(worker, /PokeFeed/);
+  assert.match(worker, /PokeReplicas/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS saved_teams/);
   assert.match(packageJson, /"@smogon\/calc"/);
 });
