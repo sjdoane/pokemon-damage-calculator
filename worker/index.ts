@@ -180,6 +180,62 @@ const VERIFIED_SCREENSHOT_TEAMS: Record<string, Record<string, unknown>> = {
       },
     ],
   },
+  UX9P70XUW8: {
+    name: "Yanagi's 2nd Place Team",
+    replicaCode: "UX9P70XUW8",
+    source: "Yanagi 2nd place (verified screenshots)",
+    detailLevel: "verified-set",
+    team: [
+      {
+        formName: "Mega Staraptor",
+        item: "Staraptite",
+        ability: "Contrary",
+        nature: "Jolly",
+        moves: ["Close Combat", "Brave Bird", "Roost", "Protect"],
+        sp: { hp: 27, atk: 14, def: 0, spa: 0, spd: 0, spe: 25 },
+      },
+      {
+        formName: "Scizor",
+        item: "Metal Coat",
+        ability: "Technician",
+        nature: "Adamant",
+        moves: ["Bullet Punch", "Close Combat", "Knock Off", "Protect"],
+        sp: { hp: 32, atk: 32, def: 2, spa: 0, spd: 0, spe: 0 },
+      },
+      {
+        formName: "Torkoal",
+        item: "Charcoal",
+        ability: "Drought",
+        nature: "Quiet",
+        moves: ["Eruption", "Heat Wave", "Weather Ball", "Protect"],
+        sp: { hp: 32, atk: 0, def: 1, spa: 32, spd: 1, spe: 0 },
+      },
+      {
+        formName: "Farigiraf",
+        item: "Sitrus Berry",
+        ability: "Armor Tail",
+        nature: "Sassy",
+        moves: ["Psychic", "Helping Hand", "Trick Room", "Protect"],
+        sp: { hp: 29, atk: 0, def: 12, spa: 0, spd: 25, spe: 0 },
+      },
+      {
+        formName: "Basculegion Male",
+        item: "Focus Sash",
+        ability: "Adaptability",
+        nature: "Adamant",
+        moves: ["Last Respects", "Liquidation", "Aqua Jet", "Protect"],
+        sp: { hp: 0, atk: 32, def: 2, spa: 0, spd: 0, spe: 32 },
+      },
+      {
+        formName: "Sneasler",
+        item: "Life Orb",
+        ability: "Poison Touch",
+        nature: "Adamant",
+        moves: ["Fake Out", "Close Combat", "Poison Jab", "Rock Slide"],
+        sp: { hp: 4, atk: 32, def: 0, spa: 0, spd: 0, spe: 30 },
+      },
+    ],
+  },
 };
 
 function parsePublicTeamPage(html: string, code: string, slug: string) {

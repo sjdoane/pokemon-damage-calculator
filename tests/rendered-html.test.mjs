@@ -62,6 +62,9 @@ test("ships the current Champions data, team library, and calculator engine", as
   assert.match(source, /Piercing Drill/);
   assert.match(worker, /QY3XFXCEJA/);
   assert.match(worker, /hp: 13, atk: 0, def: 22, spa: 23, spd: 0, spe: 8/);
+  assert.match(worker, /UX9P70XUW8/);
+  assert.match(worker, /hp: 27, atk: 14, def: 0, spa: 0, spd: 0, spe: 25/);
+  assert.match(worker, /hp: 4, atk: 32, def: 0, spa: 0, spd: 0, spe: 30/);
   assert.match(source, /Bashful/);
   assert.match(source, /Docile/);
   assert.match(source, /Hardy/);
